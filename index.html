@@ -61,7 +61,7 @@
                         gapi.auth2.getAuthInstance().isSignedIn.get()
                     );
                     authorizeButton.onclick = handleAuthClick;
-                    signoutButton.onclick = handleSignoutClick;
+                    // signoutButton.onclick = handleSignoutClick;
                 });
         }
 
@@ -72,11 +72,11 @@
         function updateSigninStatus(isSignedIn) {
             if (isSignedIn) {
                 authorizeButton.style.display = 'none';
-                signoutButton.style.display = 'block';
+                // signoutButton.style.display = 'block';
                 printDocTitle();
             } else {
                 authorizeButton.style.display = 'block';
-                signoutButton.style.display = 'none';
+                // signoutButton.style.display = 'none';
             }
         }
 
@@ -106,6 +106,154 @@
             pre.appendChild(textContent);
         }
 
+        function readParagraphElement(element) {
+            /* Returns the text in the given ParagraphElement.
+                Args:
+                    element: a ParagraphElement from a Google Doc.
+            */
+            // const textRun = element ? .textRun;
+            if (element && element.textRun) {
+                return element.textRun.content;
+            } else {
+                return '';
+            }
+        }
+
+        function fetchIndex(elements) {
+            /* same as readStructuralElements but specific for this book dicument's index table */
+            return elements.map((value, index) =>
+                value && value.paragraph && value.paragraph.elements ?
+                {
+                    title: readParagraphElement(
+                        value.paragraph.elements[0]
+                    ),
+                    pageNo: readParagraphElement(
+                        value.paragraph.elements[2]
+                    ),
+                } :
+                null
+            );
+        }
+
+        function readStrucuturalElements(elements) {
+            /* Recurses through a list of Structural Elements to read a document's text where text may be
+                in nested elements.
+                Args:
+                    elements: a list of Structural Elements.
+            */
+            let text = '';
+            elements.forEach((value) => {
+                if (value && value.paragraph && value.paragraph.elements) {
+                    value.paragraph.elements.forEach((elem) => {
+                        text += readParagraphElement(elem);
+                    });
+                } else if ('table' in value) {
+                    // The text in table cells are in nested Structural Elements and tables may be
+                    // nested.
+                    table = value.table;
+                    table.tableRows.forEach((row) => {
+                        cells = row.tableCells;
+                        cells.forEach(
+                            (cell) =>
+                            (text += readStrucuturalElements(
+                                cell.content
+                            ))
+                        );
+                    });
+                } else if ('tableOfContents' in value) {
+                    // The text in the TOC is also in a Structural Element.
+                    toc = value.tableOfContents;
+                    text += readStrucuturalElements(toc.content);
+                }
+            });
+            return text;
+        }
+
+        function modifiedReadStrucuturalElements(elements) {
+            /* Recurses through a list of Structural Elements to read a document's text where text may be
+                in nested elements.
+                Args:
+                    elements: a list of Structural Elements.
+            */
+            let text = '',
+                indexArray = [],
+                poemsArray = [],
+                startPoemsArray = false;
+            elements.forEach((value) => {
+                if (
+                    value &&
+                    value.paragraph &&
+                    value.paragraph.elements &&
+                    value.paragraph.paragraphStyle &&
+                    value.paragraph.paragraphStyle.namedStyleType
+                ) {
+                    let readElArray = [];
+                    value.paragraph.elements.forEach((elem) => {
+                        let readEl = readParagraphElement(elem);
+                        text += readEl;
+                        if (readEl !== '') {
+                            readElArray.push(readEl);
+                        }
+                        if (!startPoemsArray && readEl.includes('Index')) {
+                            startPoemsArray = true;
+                        }
+                    });
+                    if (startPoemsArray) {
+                        if (
+                            value.paragraph.paragraphStyle.namedStyleType &&
+                            value.paragraph.paragraphStyle
+                            .namedStyleType === 'HEADING_4'
+                        ) {
+                            poemsArray.push({
+                                titleArray: readElArray,
+                                poemLinesArray: [],
+                            });
+                        } else if (
+                            poemsArray.length !== 0 &&
+                            poemsArray[poemsArray.length - 1] &&
+                            poemsArray[poemsArray.length - 1].poemLinesArray
+                        ) {
+                            poemsArray[
+                                poemsArray.length - 1
+                            ].poemLinesArray.push(readElArray);
+                        }
+                    }
+                } else if ('table' in value) {
+                    // The text in table cells are in nested Structural Elements and tables may be
+                    // nested.
+                    table = value.table;
+                    table.tableRows.forEach((row) => {
+                        cells = row.tableCells;
+                        cells.forEach(
+                            (cell) =>
+                            (text += readStrucuturalElements(
+                                cell.content
+                            ))
+                        );
+                    });
+                } else if ('tableOfContents' in value) {
+                    // The text in the TOC is also in a Structural Element.
+                    toc = value.tableOfContents;
+                    text += readStrucuturalElements(toc.content);
+                    indexArray = fetchIndex(value.tableOfContents.content);
+                }
+            });
+            if (
+                poemsArray !== [] &&
+                poemsArray[poemsArray.length - 1].poemLinesArray.length > 3
+            ) {
+                poemsArray[poemsArray.length - 1].poemLinesArray.splice(
+                    poemsArray[poemsArray.length - 1].poemLinesArray
+                    .length - 3
+                );
+            }
+            return {
+                text,
+                indexArray,
+                poemsArray: poemsArray.slice(2),
+            };
+        }
+
         /**
          * Prints the title of a sample doc:
          * https://docs.google.com/document/d/195j9eDD3ccgjQRttHhJPymLJUCOUjs-jmwTrekvdjFE/edit
@@ -121,16 +269,29 @@
                 .then(
                     function(response) {
                         var doc = response.result;
-                        console.log('doc', doc);
+                        const output = modifiedReadStrucuturalElements(
+                            doc.body.content
+                        );
+                        console.log(
+                            'doc',
+                            output.text,
+                            output.indexArray,
+                            output.poemsArray
+                        );
                         var title = doc.title;
                         appendPre(
-                            'Document "' + title + '" successfully found.\n'
+                            'Document "' +
+                            title +
+                            '" successfully found.\n' +
+                            output.text
                         );
+                        gapi.auth2.getAuthInstance().signOut();
                     },
                     function(response) {
                         appendPre(
                             'Error: ' + response.result.error.message
                         );
+                        gapi.auth2.getAuthInstance().signOut();
                     }
                 );
         }
